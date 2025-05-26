@@ -1,0 +1,9 @@
+PySide6>=6.5.0,<6.7.0
+openai-whisper==20231117
+pyaudio==0.2.13
+pynput==1.7.6
+keyboard==0.13.5
+numpy==1.26.0
+sounddevice==0.4.6
+soundfile==0.12.1
+librosa==0.10.1
