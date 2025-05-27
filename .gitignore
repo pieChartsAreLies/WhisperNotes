@@ -39,6 +39,9 @@ result.json
 *.npy
 *.wav
 test_result.json
+test_keyboard.py
+test_keyboard_env.py
+test_typing.py
 
 # IDE / Editor specific
 .vscode/
