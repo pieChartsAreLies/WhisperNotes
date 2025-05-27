@@ -1,4 +1,4 @@
-# Voice Typer for Mac
+# Voice Typer
 
 A lightweight voice-to-text application that runs locally on your Mac. Simply press `Cmd+Shift+R` to start recording your voice, and the transcribed text will be typed at your cursor position. You can also use `Cmd+Shift+J` to create journal entries with your voice.
 
