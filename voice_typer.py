@@ -14,7 +14,8 @@ from pynput import keyboard
 import subprocess
 import tempfile
 import json
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox, QFileDialog
+from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox, QFileDialog,
+                               QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton, QDialogButtonBox)
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
 from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QMutex, QCoreApplication, QSettings, QStandardPaths
 
@@ -365,9 +366,10 @@ class VoiceTyper(QObject):
             self.settings.setValue("output_file", default_output)
         logging.info(f"Output Markdown file initialized to: {self.settings.value('output_file')}")
         
-        # Initialize journaling manager with directory and prompt from settings if available
+        # Initialize journaling manager with directory and prompts from settings if available
         journal_dir = self.settings.value("journal_dir")
         summary_prompt = self.settings.value("summary_prompt")
+        format_prompt = self.settings.value("format_prompt")
         
         if journal_dir and os.path.isdir(journal_dir):
             self.journal_manager = JournalingManager(output_dir=journal_dir, summary_prompt=summary_prompt)
@@ -380,6 +382,10 @@ class VoiceTyper(QObject):
             logging.info(f"Using default journal directory: {default_journal_dir}")
             # Save the default to settings
             self.settings.setValue("journal_dir", default_journal_dir)
+            
+        # Set format prompt if available
+        if format_prompt:
+            self.journal_manager.set_format_prompt(format_prompt)
         
         self.toggle_recording_signal.connect(self.toggle_recording)
         self.toggle_journal_signal.connect(self.toggle_journal_mode)
@@ -487,7 +493,24 @@ class VoiceTyper(QObject):
         edit_summary_prompt_action.triggered.connect(self.prompt_edit_summary_prompt)
         output_settings_menu.addAction(edit_summary_prompt_action)
         
+        edit_format_prompt_action = QAction("Edit Format Prompt...", self)
+        edit_format_prompt_action.triggered.connect(self.prompt_edit_format_prompt)
+        output_settings_menu.addAction(edit_format_prompt_action)
+        
         menu.addMenu(output_settings_menu)
+        
+        # Hotkey settings submenu
+        hotkey_settings_menu = QMenu("Hotkey Settings", menu)
+        
+        set_record_hotkey_action = QAction("Set Recording Hotkey...", self)
+        set_record_hotkey_action.triggered.connect(self.prompt_set_record_hotkey)
+        hotkey_settings_menu.addAction(set_record_hotkey_action)
+        
+        set_journal_hotkey_action = QAction("Set Journal Hotkey...", self)
+        set_journal_hotkey_action.triggered.connect(self.prompt_set_journal_hotkey)
+        hotkey_settings_menu.addAction(set_journal_hotkey_action)
+        
+        menu.addMenu(hotkey_settings_menu)
 
         menu.addSeparator()
 
@@ -506,12 +529,34 @@ class VoiceTyper(QObject):
         self.pressed_keys = set()
         self.hotkey_active = True # Flag to enable/disable hotkey processing if needed
 
-        # Define hotkey combinations
-        # For Cmd+Shift+R
-        self.TOGGLE_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='r')}
-        # For Cmd+Shift+J
-        self.JOURNAL_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='j')}
-        # For Cmd+Q
+        # Get custom hotkeys from settings or use defaults
+        # Recording hotkey (default: Cmd+Shift+R)
+        record_hotkey = self.settings.value("record_hotkey")
+        if record_hotkey:
+            try:
+                self.TOGGLE_HOTKEY = self._parse_hotkey_string(record_hotkey)
+                logging.info(f"Using custom recording hotkey: {record_hotkey}")
+            except Exception as e:
+                logging.error(f"Error parsing custom recording hotkey: {e}")
+                # Fall back to default
+                self.TOGGLE_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='r')}
+        else:
+            self.TOGGLE_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='r')}
+            
+        # Journal hotkey (default: Cmd+Shift+J)
+        journal_hotkey = self.settings.value("journal_hotkey")
+        if journal_hotkey:
+            try:
+                self.JOURNAL_HOTKEY = self._parse_hotkey_string(journal_hotkey)
+                logging.info(f"Using custom journal hotkey: {journal_hotkey}")
+            except Exception as e:
+                logging.error(f"Error parsing custom journal hotkey: {e}")
+                # Fall back to default
+                self.JOURNAL_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='j')}
+        else:
+            self.JOURNAL_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='j')}
+        
+        # For Cmd+Q (not customizable)
         self.QUIT_HOTKEY = {keyboard.Key.cmd, keyboard.KeyCode(char='q')}
 
         try:
@@ -521,6 +566,59 @@ class VoiceTyper(QObject):
         except Exception as e:
             logging.error(f"Failed to start hotkey listener: {e}", exc_info=True)
             # Potentially fall back to a non-hotkey mode or notify user
+            
+    def _parse_hotkey_string(self, hotkey_str):
+        """Parse a hotkey string into a set of keyboard keys.
+        
+        Format: 'cmd+shift+r' or 'ctrl+alt+j'
+        
+        Returns:
+            set: A set of keyboard.Key and keyboard.KeyCode objects
+        """
+        hotkey_set = set()
+        parts = hotkey_str.lower().split('+')
+        
+        for part in parts:
+            part = part.strip()
+            if part == 'cmd' or part == 'command':
+                hotkey_set.add(keyboard.Key.cmd)
+            elif part == 'ctrl' or part == 'control':
+                hotkey_set.add(keyboard.Key.ctrl)
+            elif part == 'alt':
+                hotkey_set.add(keyboard.Key.alt)
+            elif part == 'shift':
+                hotkey_set.add(keyboard.Key.shift)
+            elif len(part) == 1:  # Single character
+                hotkey_set.add(keyboard.KeyCode(char=part))
+            else:
+                raise ValueError(f"Unsupported key: {part}")
+                
+        return hotkey_set
+        
+    def _hotkey_to_string(self, hotkey_set):
+        """Convert a set of keyboard keys to a string representation.
+        
+        Returns:
+            str: A string representation of the hotkey (e.g., 'cmd+shift+r')
+        """
+        parts = []
+        
+        # Process special keys first
+        if keyboard.Key.cmd in hotkey_set:
+            parts.append("cmd")
+        if keyboard.Key.ctrl in hotkey_set:
+            parts.append("ctrl")
+        if keyboard.Key.alt in hotkey_set:
+            parts.append("alt")
+        if keyboard.Key.shift in hotkey_set:
+            parts.append("shift")
+            
+        # Then add character keys
+        for key in hotkey_set:
+            if isinstance(key, keyboard.KeyCode) and hasattr(key, 'char'):
+                parts.append(key.char)
+                
+        return "+".join(parts)
 
     def on_press(self, key):
         """Handle key press events for hotkeys."""
@@ -748,6 +846,234 @@ class VoiceTyper(QObject):
                     QSystemTrayIcon.Information, 
                     3000
                 )
+                
+    def prompt_edit_format_prompt(self):
+        """Opens a dialog to edit the format prompt template used for journal entries."""
+        # Get current format prompt from settings or use default
+        default_prompt = "Format this transcription into well-structured paragraphs. DO NOT add any commentary, analysis, or description. DO NOT change any words or meaning. Only add proper paragraph breaks, fix punctuation, and improve readability:"
+        current_prompt = self.settings.value("format_prompt", default_prompt)
+        
+        # Create dialog
+        dialog = QDialog(None)
+        dialog.setWindowTitle("Edit Format Prompt")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(300)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add explanation label
+        explanation = QLabel(
+            "Customize the prompt used to format transcriptions for journal entries. "
+            "You can specify how you want paragraphs structured, punctuation handled, or any specific formatting preferences. "
+            "The transcript will be appended to the end of this prompt."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        
+        # Add text edit for prompt
+        prompt_edit = QTextEdit(dialog)
+        prompt_edit.setPlainText(current_prompt)
+        layout.addWidget(prompt_edit)
+        
+        # Add reset button
+        reset_button = QPushButton("Reset to Default", dialog)
+        reset_button.clicked.connect(lambda: prompt_edit.setPlainText(default_prompt))
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        # Add reset button to button box layout
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(reset_button)
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        layout.addLayout(button_layout)
+        
+        # Show dialog and process result
+        if dialog.exec_() == QDialog.Accepted:
+            new_prompt = prompt_edit.toPlainText().strip()
+            if new_prompt:
+                # Save to settings
+                self.settings.setValue("format_prompt", new_prompt)
+                logging.info("Format prompt updated")
+                
+                # Update the journal manager with the new prompt
+                self.journal_manager.set_format_prompt(new_prompt)
+                
+                # Show confirmation to user
+                self.tray_icon.showMessage(
+                    "Settings Updated", 
+                    "Format prompt has been updated.", 
+                    QSystemTrayIcon.Information, 
+                    3000
+                )
+                
+    def prompt_set_record_hotkey(self):
+        """Opens a dialog to set the recording hotkey."""
+        # Get current hotkey from settings or use default
+        default_hotkey = "cmd+shift+r"
+        current_hotkey = self.settings.value("record_hotkey", default_hotkey)
+        
+        # Create dialog
+        dialog = QDialog(None)
+        dialog.setWindowTitle("Set Recording Hotkey")
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(200)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add explanation label
+        explanation = QLabel(
+            "Set the hotkey combination for starting/stopping recording. "
+            "Use format like 'cmd+shift+r' or 'ctrl+alt+r'. "
+            "Changes will take effect after restarting the application."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        
+        # Add text edit for hotkey
+        hotkey_edit = QTextEdit(dialog)
+        hotkey_edit.setPlainText(current_hotkey)
+        hotkey_edit.setMaximumHeight(60)
+        layout.addWidget(hotkey_edit)
+        
+        # Add platform-specific examples
+        examples = QLabel(
+            "Examples:\n"
+            "- macOS: cmd+shift+r, cmd+alt+r\n"
+            "- Windows: ctrl+shift+r, ctrl+alt+r"
+        )
+        examples.setWordWrap(True)
+        layout.addWidget(examples)
+        
+        # Add reset button
+        reset_button = QPushButton("Reset to Default", dialog)
+        reset_button.clicked.connect(lambda: hotkey_edit.setPlainText(default_hotkey))
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        # Add reset button to button box layout
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(reset_button)
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        layout.addLayout(button_layout)
+        
+        # Show dialog and process result
+        if dialog.exec_() == QDialog.Accepted:
+            new_hotkey = hotkey_edit.toPlainText().strip()
+            if new_hotkey:
+                try:
+                    # Validate the hotkey format
+                    self._parse_hotkey_string(new_hotkey)
+                    
+                    # Save to settings
+                    self.settings.setValue("record_hotkey", new_hotkey)
+                    logging.info(f"Recording hotkey updated to: {new_hotkey}")
+                    
+                    # Show confirmation to user
+                    self.tray_icon.showMessage(
+                        "Settings Updated", 
+                        f"Recording hotkey set to: {new_hotkey}\nRestart the application for changes to take effect.", 
+                        QSystemTrayIcon.Information, 
+                        5000
+                    )
+                except Exception as e:
+                    # Show error message
+                    QMessageBox.critical(
+                        None,
+                        "Invalid Hotkey Format",
+                        f"The hotkey format is invalid: {str(e)}\n\nPlease use format like 'cmd+shift+r' or 'ctrl+alt+r'."
+                    )
+                    
+    def prompt_set_journal_hotkey(self):
+        """Opens a dialog to set the journal hotkey."""
+        # Get current hotkey from settings or use default
+        default_hotkey = "cmd+shift+j"
+        current_hotkey = self.settings.value("journal_hotkey", default_hotkey)
+        
+        # Create dialog
+        dialog = QDialog(None)
+        dialog.setWindowTitle("Set Journal Hotkey")
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(200)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add explanation label
+        explanation = QLabel(
+            "Set the hotkey combination for starting/stopping journal recording. "
+            "Use format like 'cmd+shift+j' or 'ctrl+alt+j'. "
+            "Changes will take effect after restarting the application."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        
+        # Add text edit for hotkey
+        hotkey_edit = QTextEdit(dialog)
+        hotkey_edit.setPlainText(current_hotkey)
+        hotkey_edit.setMaximumHeight(60)
+        layout.addWidget(hotkey_edit)
+        
+        # Add platform-specific examples
+        examples = QLabel(
+            "Examples:\n"
+            "- macOS: cmd+shift+j, cmd+alt+j\n"
+            "- Windows: ctrl+shift+j, ctrl+alt+j"
+        )
+        examples.setWordWrap(True)
+        layout.addWidget(examples)
+        
+        # Add reset button
+        reset_button = QPushButton("Reset to Default", dialog)
+        reset_button.clicked.connect(lambda: hotkey_edit.setPlainText(default_hotkey))
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        # Add reset button to button box layout
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(reset_button)
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        layout.addLayout(button_layout)
+        
+        # Show dialog and process result
+        if dialog.exec_() == QDialog.Accepted:
+            new_hotkey = hotkey_edit.toPlainText().strip()
+            if new_hotkey:
+                try:
+                    # Validate the hotkey format
+                    self._parse_hotkey_string(new_hotkey)
+                    
+                    # Save to settings
+                    self.settings.setValue("journal_hotkey", new_hotkey)
+                    logging.info(f"Journal hotkey updated to: {new_hotkey}")
+                    
+                    # Show confirmation to user
+                    self.tray_icon.showMessage(
+                        "Settings Updated", 
+                        f"Journal hotkey set to: {new_hotkey}\nRestart the application for changes to take effect.", 
+                        QSystemTrayIcon.Information, 
+                        5000
+                    )
+                except Exception as e:
+                    # Show error message
+                    QMessageBox.critical(
+                        None,
+                        "Invalid Hotkey Format",
+                        f"The hotkey format is invalid: {str(e)}\n\nPlease use format like 'cmd+shift+j' or 'ctrl+alt+j'."
+                    )
     
     def handle_transcription(self, text):
         """Handle the transcribed text."""

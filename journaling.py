@@ -34,9 +34,13 @@ class JournalingManager:
         else:
             self.output_dir = output_dir
             
-        # Set default summary prompt
+        # Set default prompts
         self.default_summary_prompt = "Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points:"
         self.summary_prompt = summary_prompt if summary_prompt else self.default_summary_prompt
+        
+        # Default formatting prompt
+        self.default_format_prompt = "Format this transcription into well-structured paragraphs. DO NOT add any commentary, analysis, or description. DO NOT change any words or meaning. Only add proper paragraph breaks, fix punctuation, and improve readability:"
+        self.format_prompt = None  # Will be loaded from settings if available
             
         # Ensure directories exist
         self.ensure_directory_exists(self.output_dir)
@@ -122,6 +126,16 @@ class JournalingManager:
         """
         self.summary_prompt = prompt
         logging.info(f"Summary prompt updated: {prompt[:50]}..." if len(prompt) > 50 else f"Summary prompt updated: {prompt}")
+        
+    def set_format_prompt(self, prompt: str) -> None:
+        """
+        Set a custom prompt for formatting transcriptions.
+        
+        Args:
+            prompt: The custom prompt to use
+        """
+        self.format_prompt = prompt
+        logging.info(f"Format prompt updated: {prompt[:50]}..." if len(prompt) > 50 else f"Format prompt updated: {prompt}")
     
     def process_with_ollama(self, text: str) -> Tuple[str, str]:
         """
@@ -147,8 +161,13 @@ class JournalingManager:
             }])
             summary = summary_response['message']['content'].strip()
             
-            # Get formatted text from Ollama - just formatting, no commentary
-            format_prompt = f"Format this transcription into well-structured paragraphs. DO NOT add any commentary, analysis, or description. DO NOT change any words or meaning. Only add proper paragraph breaks, fix punctuation, and improve readability: {text}"
+            # Get formatted text from Ollama using custom or default prompt
+            if self.format_prompt:
+                format_prompt_text = self.format_prompt
+            else:
+                format_prompt_text = self.default_format_prompt
+                
+            format_prompt = f"{format_prompt_text} {text}"
             format_response = ollama.chat(model=self.ollama_model, messages=[{
                 "role": "user",
                 "content": format_prompt
