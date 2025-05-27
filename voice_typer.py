@@ -357,13 +357,6 @@ class VoiceTyper(QObject):
         self.journaling_mode = False  # Track if we're in journaling mode
         self.is_recording = False  # Track recording state
         
-        # Initialize journaling manager
-        self.journal_manager = JournalingManager()
-        
-        self.toggle_recording_signal.connect(self.toggle_recording)
-        self.toggle_journal_signal.connect(self.toggle_journal_mode)
-        self.quit_signal.connect(self.quit)
-
         # Initialize QSettings for persistent output file path
         self.settings = QSettings("VoiceTyper", "VoiceTyper")
         if not self.settings.contains("output_file"):
@@ -371,6 +364,24 @@ class VoiceTyper(QObject):
             default_output = os.path.join(documents_path, "VoiceTyperTranscriptions.md")
             self.settings.setValue("output_file", default_output)
         logging.info(f"Output Markdown file initialized to: {self.settings.value('output_file')}")
+        
+        # Initialize journaling manager with directory from settings if available
+        journal_dir = self.settings.value("journal_dir")
+        if journal_dir and os.path.isdir(journal_dir):
+            self.journal_manager = JournalingManager(output_dir=journal_dir)
+            logging.info(f"Using journal directory from settings: {journal_dir}")
+        else:
+            # Use default directory
+            home_dir = os.path.expanduser("~")
+            default_journal_dir = os.path.join(home_dir, "Documents", "Personal", "Audio Journal")
+            self.journal_manager = JournalingManager(output_dir=default_journal_dir)
+            logging.info(f"Using default journal directory: {default_journal_dir}")
+            # Save the default to settings
+            self.settings.setValue("journal_dir", default_journal_dir)
+        
+        self.toggle_recording_signal.connect(self.toggle_recording)
+        self.toggle_journal_signal.connect(self.toggle_journal_mode)
+        self.quit_signal.connect(self.quit)
 
         self.load_model()
         self.setup_tray()
@@ -456,10 +467,19 @@ class VoiceTyper(QObject):
         menu.addAction(self.journal_action)
         
         menu.addSeparator()
-
-        set_output_file_action = QAction("Set Output File...", self)
+        
+        # Output settings submenu
+        output_settings_menu = QMenu("Output Settings", menu)
+        
+        set_output_file_action = QAction("Set Transcription Output File...", self)
         set_output_file_action.triggered.connect(self.prompt_set_output_file)
-        menu.addAction(set_output_file_action)
+        output_settings_menu.addAction(set_output_file_action)
+        
+        set_journal_dir_action = QAction("Set Journal Directory...", self)
+        set_journal_dir_action.triggered.connect(self.prompt_set_journal_dir)
+        output_settings_menu.addAction(set_journal_dir_action)
+        
+        menu.addMenu(output_settings_menu)
 
         menu.addSeparator()
 
@@ -614,14 +634,47 @@ class VoiceTyper(QObject):
 
         file_path, _ = QFileDialog.getSaveFileName(
             None,  # Parent widget; QMainWindow instance usually, None for simple dialogs
-            "Set Output Markdown File",
+            "Set Transcription Output File",
             initial_path,
             "Markdown Files (*.md);;All Files (*)"
         )
         if file_path:
             self.settings.setValue("output_file", file_path)
             logging.info(f"Output Markdown file changed to: {self.settings.value('output_file')}")
-            self.tray_icon.showMessage("Settings Updated", f"Output file set to:\n{file_path}", QSystemTrayIcon.Information, 3000)
+            self.tray_icon.showMessage("Settings Updated", f"Transcription output file set to:\n{file_path}", QSystemTrayIcon.Information, 3000)
+            
+    def prompt_set_journal_dir(self):
+        """Prompts the user to select a directory for saving journal entries."""
+        # Get current journal directory from settings or use default
+        current_dir = self.settings.value("journal_dir")
+        if not current_dir:
+            # Default to ~/Documents/Personal/Audio Journal/
+            home_dir = os.path.expanduser("~")
+            current_dir = os.path.join(home_dir, "Documents", "Personal", "Audio Journal")
+            
+        # Open directory selection dialog
+        journal_dir = QFileDialog.getExistingDirectory(
+            None,
+            "Select Journal Directory",
+            current_dir,
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        
+        if journal_dir:
+            # Save the new journal directory in settings
+            self.settings.setValue("journal_dir", journal_dir)
+            logging.info(f"Journal directory changed to: {journal_dir}")
+            
+            # Update the journal manager with the new directory
+            self.journal_manager = JournalingManager(output_dir=journal_dir)
+            
+            # Show confirmation to user
+            self.tray_icon.showMessage(
+                "Settings Updated", 
+                f"Journal directory set to:\n{journal_dir}", 
+                QSystemTrayIcon.Information, 
+                3000
+            )
     
     def handle_transcription(self, text):
         """Handle the transcribed text."""
