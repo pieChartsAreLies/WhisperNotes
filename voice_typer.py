@@ -254,7 +254,7 @@ class RecordingThread(QThread):
     finished = Signal(object)  # Emits audio data when done
     error = Signal(str)
     
-    def __init__(self, max_duration=10.0):
+    def __init__(self, max_duration=900.0):  # Changed from 10.0 to 900.0 (15 minutes)
         super().__init__()
         self.max_duration = max_duration
         self.stop_flag = False
@@ -369,10 +369,11 @@ class VoiceTyper(QObject):
     def check_application_state(self):
         """Check the application state and ensure everything is responsive."""
         # Check if recording has timed out
-        if self.is_recording and hasattr(self, 'recording_start_time'):
+        if self.is_recording and hasattr(self, 'recording_start_time') and hasattr(self, 'recording_thread'):
             elapsed = time.time() - self.recording_start_time
-            if elapsed > 12.0:  # Give a bit of extra time beyond max_duration
-                logging.warning(f"Recording timeout detected ({elapsed:.1f}s). Forcing stop.")
+            max_duration = getattr(self.recording_thread, 'max_duration', 900.0)  # Default to 15 minutes if not set
+            if elapsed > max_duration + 2.0:  # Add 2-second buffer
+                logging.warning(f"Recording timeout detected ({elapsed:.1f}s > {max_duration}s). Forcing stop.")
                 self.stop_recording()
     
     def load_model(self):
