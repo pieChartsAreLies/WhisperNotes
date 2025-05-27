@@ -7,3 +7,4 @@ numpy==1.26.0
 sounddevice==0.4.6
 soundfile==0.12.1
 librosa==0.10.1
+ollama==0.1.5

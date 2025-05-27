@@ -1,6 +1,6 @@
 # Voice Typer for Mac
 
-A lightweight voice-to-text application that runs locally on your Mac. Simply press `Cmd+Shift+R` to start recording your voice, and the transcribed text will be typed at your cursor position.
+A lightweight voice-to-text application that runs locally on your Mac. Simply press `Cmd+Shift+R` to start recording your voice, and the transcribed text will be typed at your cursor position. You can also use `Cmd+Shift+J` to create journal entries with your voice.
 
 ## Features
 
@@ -8,6 +8,8 @@ A lightweight voice-to-text application that runs locally on your Mac. Simply pr
 - ✍️ Transcribe speech to text using OpenAI's Whisper (runs locally)
 - 📝 Automatically type transcribed text at cursor position
 - 📊 Keep a log of all transcriptions with timestamps
+- 📓 Journal entries with `Cmd+Shift+J` for easy voice journaling
+- 🤖 AI-powered summaries and formatting for journal entries
 - 🎯 Visual recording indicator
 - 🖥️ Runs in the system tray (menu bar)
 - 🔒 All processing happens locally - no data leaves your computer
@@ -47,14 +49,22 @@ A lightweight voice-to-text application that runs locally on your Mac. Simply pr
 
 3. **Start using Voice Typer**:
    - The app will run in the menu bar (look for a red dot icon)
-   - Press `Cmd+Shift+R` to start recording
+   - Press `Cmd+Shift+R` to start recording for regular transcription
    - Release the keys to stop recording and transcribe
    - The transcribed text will be typed at your cursor position
    - A visual indicator will show while recording
 
+4. **Using Journal Mode**:
+   - Press `Cmd+Shift+J` to start recording for a journal entry
+   - Release the keys to stop recording
+   - The transcription will be saved to `~/Documents/Personal/Audio Journal/Journal.md`
+   - Each entry includes a timestamp, summary, and link to the full transcription
+   - Audio recordings are saved in the `recordings` subfolder
+
 ## Logging
 
-All transcriptions are automatically saved to `~/voice_typer_log.md` with timestamps.
+- Regular transcriptions are automatically saved to the configured output file (default: `~/Documents/VoiceTyperTranscriptions.md`) with timestamps.
+- Journal entries are saved to `~/Documents/Personal/Audio Journal/Journal.md` with timestamps, summaries, and links to detailed entries.
 
 ## Customization
 
@@ -82,6 +92,7 @@ You can customize the following in the `CONFIG` dictionary in `voice_typer.py`:
 - Python 3.8+
 - Microphone access
 - Internet connection (only for first-time model download)
+- Ollama running locally (for journal entry summarization)
 
 ## License
 

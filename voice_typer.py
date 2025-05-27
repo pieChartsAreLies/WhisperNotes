@@ -18,6 +18,17 @@ from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QMessageBox,
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
 from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QMutex, QCoreApplication, QSettings, QStandardPaths
 
+# Import journaling module
+try:
+    from journaling import JournalingManager
+except ImportError:
+    # Fallback if journaling.py is not found
+    class JournalingManager:
+        def __init__(self, *args, **kwargs):
+            pass
+        def create_journal_entry(self, *args, **kwargs):
+            return {'error': 'Journaling not available'}
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -328,32 +339,38 @@ class RecordingThread(QThread):
 
 class VoiceTyper(QObject):
     """Main application class for Voice Typer."""
-    # Define signals for thread-safe operations
     toggle_recording_signal = Signal()
+    toggle_journal_signal = Signal()
     quit_signal = Signal()
     
     def __init__(self, app):
         super().__init__()
         self.app = app
         self.model = None
-        self.is_recording = False
-        self.audio_data = None
         self.recording_thread = None
-        self.model_thread = None
-        self.model_loader = None
-        self.transcriber = None # For the TranscriptionWorker instance
-        self.transcription_thread = None # For the QThread hosting TranscriptionWorker
+        self.transcription_thread = None
+        self.transcriber = None  # Holds reference to the worker object
+        self.last_recording_time = 0
+        self.mutex = QMutex()  # For thread safety
         self.hotkey_active = False
         self.pressed_keys = set()
+        self.journaling_mode = False  # Track if we're in journaling mode
+        self.is_recording = False  # Track recording state
+        
+        # Initialize journaling manager
+        self.journal_manager = JournalingManager()
+        
         self.toggle_recording_signal.connect(self.toggle_recording)
+        self.toggle_journal_signal.connect(self.toggle_journal_mode)
         self.quit_signal.connect(self.quit)
 
         # Initialize QSettings for persistent output file path
-        # OrganizationName and ApplicationName are used to determine storage location
-        self.settings = QSettings("MyCompany", "VoiceTyperApp") # Using generic names, can be customized
-        default_output_path = os.path.join(QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation), "VoiceTyperTranscriptions.md")
-        self.output_markdown_file_path = self.settings.value("output_markdown_file_path", default_output_path)
-        logging.info(f"Output Markdown file initialized to: {self.output_markdown_file_path}")
+        self.settings = QSettings("VoiceTyper", "VoiceTyper")
+        if not self.settings.contains("output_file"):
+            documents_path = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+            default_output = os.path.join(documents_path, "VoiceTyperTranscriptions.md")
+            self.settings.setValue("output_file", default_output)
+        logging.info(f"Output Markdown file initialized to: {self.settings.value('output_file')}")
 
         self.load_model()
         self.setup_tray()
@@ -369,8 +386,8 @@ class VoiceTyper(QObject):
     def check_application_state(self):
         """Check the application state and ensure everything is responsive."""
         # Check if recording has timed out
-        if self.is_recording and hasattr(self, 'recording_start_time') and hasattr(self, 'recording_thread'):
-            elapsed = time.time() - self.recording_start_time
+        if self.recording_thread and self.recording_thread.isRunning():
+            elapsed = time.time() - self.last_recording_time
             max_duration = getattr(self.recording_thread, 'max_duration', 900.0)  # Default to 15 minutes if not set
             if elapsed > max_duration + 2.0:  # Add 2-second buffer
                 logging.warning(f"Recording timeout detected ({elapsed:.1f}s > {max_duration}s). Forcing stop.")
@@ -434,6 +451,10 @@ class VoiceTyper(QObject):
         self.toggle_action.triggered.connect(self.toggle_recording)
         menu.addAction(self.toggle_action)
         
+        self.journal_action = QAction("Start Journal Entry (Cmd+Shift+J)", self)
+        self.journal_action.triggered.connect(self.toggle_journal_mode)
+        menu.addAction(self.journal_action)
+        
         menu.addSeparator()
 
         set_output_file_action = QAction("Set Output File...", self)
@@ -453,13 +474,15 @@ class VoiceTyper(QObject):
         # self.tray_icon.activated.connect(self.on_tray_icon_activated) # Ensure on_tray_icon_activated exists or remove
 
     def setup_hotkeys(self):
-        """Setup global hotkeys for toggling recording and quitting."""
+        """Setup global hotkeys for toggling recording, journaling, and quitting."""
         self.pressed_keys = set()
         self.hotkey_active = True # Flag to enable/disable hotkey processing if needed
 
         # Define hotkey combinations
         # For Cmd+Shift+R
         self.TOGGLE_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='r')}
+        # For Cmd+Shift+J
+        self.JOURNAL_HOTKEY = {keyboard.Key.cmd, keyboard.Key.shift, keyboard.KeyCode(char='j')}
         # For Cmd+Q
         self.QUIT_HOTKEY = {keyboard.Key.cmd, keyboard.KeyCode(char='q')}
 
@@ -496,6 +519,14 @@ class VoiceTyper(QObject):
             # self.pressed_keys.clear() # Reconsider this, might interfere with other hotkeys
             return # Hotkey handled
 
+        # Check for Cmd+Shift+J to toggle journaling
+        if self.JOURNAL_HOTKEY.issubset(self.pressed_keys):
+            logging.info("Toggle journaling hotkey detected (Cmd+Shift+J).")
+            # Emit signal to ensure toggle_journal_mode runs on the main Qt thread
+            self.toggle_journal_signal.emit()
+            # self.pressed_keys.clear()
+            return # Hotkey handled
+
         # Check for Cmd+Q to quit
         if self.QUIT_HOTKEY.issubset(self.pressed_keys):
             logging.info("Quit hotkey detected (Cmd+Q).")
@@ -523,9 +554,22 @@ class VoiceTyper(QObject):
             logging.warning("No audio data to process.")
             self.update_icon(False)
             return
-
+            
+        # Store audio data for journaling if needed
         self.audio_data = audio_data
-        logging.info("Recording finished, starting transcription...")
+        logging.info(f"Recording finished, audio data shape: {audio_data.shape if hasattr(audio_data, 'shape') else 'unknown'}")
+        
+        # Update UI to show we're no longer recording
+        self.update_icon(False)
+        
+        # Show transcription in progress notification
+        mode_text = "journal entry" if self.journaling_mode else "transcription"
+        self.tray_icon.showMessage(
+            "Voice Typer", 
+            f"Transcribing audio for {mode_text}...", 
+            QSystemTrayIcon.Information, 
+            2000
+        )
 
         # Ensure previous transcriber and thread are cleaned up if they somehow exist
         if self.transcriber is not None or self.transcription_thread is not None:
@@ -537,7 +581,7 @@ class VoiceTyper(QObject):
             self._clear_transcription_thread_references()
 
         # Create and start new transcription worker and thread
-        self.transcriber = TranscriptionWorker("base", self.audio_data)
+        self.transcriber = TranscriptionWorker("base", audio_data)
         self.transcription_thread = QThread()
         self.transcriber.moveToThread(self.transcription_thread)
 
@@ -561,7 +605,7 @@ class VoiceTyper(QObject):
 
     def prompt_set_output_file(self):
         """Prompts the user to select a Markdown file for saving transcriptions."""
-        current_path = self.output_markdown_file_path
+        current_path = self.settings.value("output_file")
         # Suggest a filename and directory based on current settings or defaults
         suggested_filename = os.path.basename(current_path) if current_path and not os.path.isdir(current_path) else "VoiceTyperTranscriptions.md"
         suggested_dir = os.path.dirname(current_path) if current_path and os.path.isdir(os.path.dirname(current_path)) else QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
@@ -575,70 +619,133 @@ class VoiceTyper(QObject):
             "Markdown Files (*.md);;All Files (*)"
         )
         if file_path:
-            self.output_markdown_file_path = file_path
-            self.settings.setValue("output_markdown_file_path", file_path)
-            logging.info(f"Output Markdown file changed to: {self.output_markdown_file_path}")
+            self.settings.setValue("output_file", file_path)
+            logging.info(f"Output Markdown file changed to: {self.settings.value('output_file')}")
             self.tray_icon.showMessage("Settings Updated", f"Output file set to:\n{file_path}", QSystemTrayIcon.Information, 3000)
     
     def handle_transcription(self, text):
-        """Handle the transcribed text and append to Markdown file."""
-        logging.info(f"Transcription: {text}")
-        self.tray_icon.showMessage("Transcription", text, QSystemTrayIcon.Information, 5000)
-
-        # --- Add keyboard typing --- 
-        if text: # Only type if there's text
-            try:
-                # Small delay to ensure focus is back from hotkey release, etc.
-                # This might need adjustment or a more robust focus check on some systems.
-                time.sleep(0.1) 
-                keyboard_controller = keyboard.Controller()
-                keyboard_controller.type(text)
-                logging.info(f"Typed out transcription: {text}")
-            except Exception as e:
-                logging.error(f"Error typing transcription with pynput: {e}", exc_info=True)
-                self.tray_icon.showMessage("Typing Error", "Could not type out the transcription.", QSystemTrayIcon.Warning, 5000)
-        # --- End keyboard typing --- 
-
-        if not self.output_markdown_file_path:
-            logging.warning("Output Markdown file path is not set. Cannot save transcription.")
-            self.tray_icon.showMessage("Configuration Warning", "Output file not set. Please set it via the tray menu.", QSystemTrayIcon.Warning, 5000)
+        """Handle the transcribed text."""
+        if not text or not text.strip():
+            logging.warning("Empty transcription received")
+            self.tray_icon.showMessage(
+                "Voice Typer", 
+                "No speech detected. Please try again.", 
+                QSystemTrayIcon.Warning, 
+                3000
+            )
             return
 
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            # Using H2 for timestamp and a horizontal rule for better separation in Markdown
-            formatted_transcription = f"## {timestamp}\n\n{text}\n\n---\n\n"
-            
-            # Ensure the directory for the output file exists
-            output_dir = os.path.dirname(self.output_markdown_file_path)
-            if output_dir and not os.path.exists(output_dir):
-                os.makedirs(output_dir)
-                logging.info(f"Created directory for output file: {output_dir}")
+            if self.journaling_mode:
+                # Handle as journal entry
+                self.handle_journal_entry(text)
+            else:
+                # Regular transcription mode
+                # Get the output file path from settings
+                output_file = self.settings.value("output_file")
+                if not output_file:
+                    logging.error("No output file configured")
+                    self.tray_icon.showMessage(
+                        "Voice Typer", 
+                        "No output file configured. Please set an output file.", 
+                        QSystemTrayIcon.Critical, 
+                        5000
+                    )
+                    return
 
-            with open(self.output_markdown_file_path, 'a', encoding='utf-8') as f:
-                f.write(formatted_transcription)
-            logging.info(f"Appended transcription to {self.output_markdown_file_path}")
-        except IOError as e:
-            logging.error(f"Error writing transcription to {self.output_markdown_file_path}: {e}", exc_info=True)
-            self.tray_icon.showMessage("File Error", f"Could not write to:\n{self.output_markdown_file_path}", QSystemTrayIcon.Critical, 5000)
+                # Ensure the output directory exists
+                output_dir = os.path.dirname(output_file)
+                os.makedirs(output_dir, exist_ok=True)
+
+                # Format the transcription with timestamp
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                formatted_text = f"## {timestamp}\n\n{text}\n\n---\n\n"
+
+                # Append to the output file
+                with open(output_file, 'a', encoding='utf-8') as f:
+                    f.write(formatted_text)
+
+                # Type the text using keyboard module
+                import keyboard as kb
+                kb.write(text)
+
+                # Show success notification
+                self.tray_icon.showMessage(
+                    "Voice Typer", 
+                    f"Transcription saved to {output_file}", 
+                    QSystemTrayIcon.Information, 
+                    3000
+                )
+
         except Exception as e:
-            logging.error(f"Unexpected error appending transcription: {e}", exc_info=True)
-            self.tray_icon.showMessage("Error", "An unexpected error occurred while saving the transcription.", QSystemTrayIcon.Critical, 5000)
+            logging.error(f"Error handling transcription: {e}", exc_info=True)
+            self.tray_icon.showMessage(
+                "Voice Typer", 
+                f"Error: {str(e)}", 
+                QSystemTrayIcon.Critical, 
+                5000
+            )
     
     def toggle_recording(self):
         """Toggle recording state."""
-        logging.info(f"Toggle recording (current state: {'recording' if self.is_recording else 'not recording'})")
         if self.is_recording:
             self.stop_recording()
         else:
             self.start_recording()
-    
+            
+    def toggle_journal_mode(self):
+        """Toggle journaling mode and start/stop recording."""
+        if self.is_recording:
+            # If already recording, stop it
+            logging.info("Stopping recording in journal mode")
+            self.stop_recording()
+        else:
+            # Start recording in journal mode
+            self.journaling_mode = True
+            logging.info("Journal mode activated")
+            self.start_recording()
+            self.tray_icon.showMessage(
+                "Voice Typer",
+                "Journal mode activated. Recording will be saved as a journal entry.",
+                QSystemTrayIcon.Information,
+                2000
+            )
+            
+    def handle_journal_entry(self, text):
+        """Handle creating a journal entry with the transcribed text."""
+        try:
+            # Create journal entry
+            entry = self.journal_manager.create_journal_entry(
+                transcription=text,
+                audio_data=self.audio_data if hasattr(self, 'audio_data') else None
+            )
+            
+            # Show a notification
+            self.tray_icon.showMessage(
+                "Voice Typer",
+                f"Journal entry created with timestamp: {entry.get('timestamp', 'Unknown')}",
+                QSystemTrayIcon.Information,
+                3000
+            )
+            
+            # Reset journaling mode
+            self.journaling_mode = False
+            
+        except Exception as e:
+            logging.error(f"Error creating journal entry: {e}", exc_info=True)
+            self.tray_icon.showMessage(
+                "Voice Typer",
+                f"Error creating journal entry: {e}",
+                QSystemTrayIcon.Critical,
+                5000
+            )
+            
     def start_recording(self):
         """Start recording audio in a separate thread."""
-        if not self.is_recording and self.model is not None:
+        if not hasattr(self, 'recording_thread') or not self.recording_thread or not self.recording_thread.isRunning():
             logging.info("Starting recording...")
             self.is_recording = True
-            self.recording_start_time = time.time()
+            self.last_recording_time = time.time()
             
             # Update UI
             self.toggle_action.setText("Stop Recording")
