@@ -18,13 +18,14 @@ class JournalingManager:
     Integrates with Ollama for text summarization and formatting.
     """
     
-    def __init__(self, output_dir: Optional[str] = None):
+    def __init__(self, output_dir: Optional[str] = None, summary_prompt: Optional[str] = None):
         """
         Initialize the JournalingManager.
         
         Args:
             output_dir: Directory to store journal entries and audio files.
                        If None, uses '~/Documents/Personal/Audio Journal/'.
+            summary_prompt: Custom prompt to use for generating summaries
         """
         # Use the specified directory or default to ~/Documents/Personal/Audio Journal/
         if output_dir is None:
@@ -32,6 +33,10 @@ class JournalingManager:
             self.output_dir = os.path.join(home_dir, "Documents", "Personal", "Audio Journal")
         else:
             self.output_dir = output_dir
+            
+        # Set default summary prompt
+        self.default_summary_prompt = "Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points:"
+        self.summary_prompt = summary_prompt if summary_prompt else self.default_summary_prompt
             
         # Ensure directories exist
         self.ensure_directory_exists(self.output_dir)
@@ -108,6 +113,16 @@ class JournalingManager:
             logging.error(f"Error saving audio file: {e}")
             return ""
     
+    def set_summary_prompt(self, prompt: str) -> None:
+        """
+        Set a custom prompt for generating summaries.
+        
+        Args:
+            prompt: The custom prompt to use
+        """
+        self.summary_prompt = prompt
+        logging.info(f"Summary prompt updated: {prompt[:50]}..." if len(prompt) > 50 else f"Summary prompt updated: {prompt}")
+    
     def process_with_ollama(self, text: str) -> Tuple[str, str]:
         """
         Process text with Ollama to get a summary and formatted version.
@@ -124,8 +139,8 @@ class JournalingManager:
             return f"Transcription: {text[:50]}..." if len(text) > 50 else f"Transcription: {text}", text
             
         try:
-            # Get summary from Ollama - just a brief extraction of the content
-            summary_prompt = f"Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points: {text}"
+            # Get summary from Ollama using the custom or default prompt
+            summary_prompt = f"{self.summary_prompt} {text}"
             summary_response = ollama.chat(model=self.ollama_model, messages=[{
                 "role": "user",
                 "content": summary_prompt

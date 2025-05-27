@@ -365,16 +365,18 @@ class VoiceTyper(QObject):
             self.settings.setValue("output_file", default_output)
         logging.info(f"Output Markdown file initialized to: {self.settings.value('output_file')}")
         
-        # Initialize journaling manager with directory from settings if available
+        # Initialize journaling manager with directory and prompt from settings if available
         journal_dir = self.settings.value("journal_dir")
+        summary_prompt = self.settings.value("summary_prompt")
+        
         if journal_dir and os.path.isdir(journal_dir):
-            self.journal_manager = JournalingManager(output_dir=journal_dir)
+            self.journal_manager = JournalingManager(output_dir=journal_dir, summary_prompt=summary_prompt)
             logging.info(f"Using journal directory from settings: {journal_dir}")
         else:
             # Use default directory
             home_dir = os.path.expanduser("~")
             default_journal_dir = os.path.join(home_dir, "Documents", "Personal", "Audio Journal")
-            self.journal_manager = JournalingManager(output_dir=default_journal_dir)
+            self.journal_manager = JournalingManager(output_dir=default_journal_dir, summary_prompt=summary_prompt)
             logging.info(f"Using default journal directory: {default_journal_dir}")
             # Save the default to settings
             self.settings.setValue("journal_dir", default_journal_dir)
@@ -478,6 +480,12 @@ class VoiceTyper(QObject):
         set_journal_dir_action = QAction("Set Journal Directory...", self)
         set_journal_dir_action.triggered.connect(self.prompt_set_journal_dir)
         output_settings_menu.addAction(set_journal_dir_action)
+        
+        output_settings_menu.addSeparator()
+        
+        edit_summary_prompt_action = QAction("Edit Summary Prompt...", self)
+        edit_summary_prompt_action.triggered.connect(self.prompt_edit_summary_prompt)
+        output_settings_menu.addAction(edit_summary_prompt_action)
         
         menu.addMenu(output_settings_menu)
 
@@ -665,8 +673,9 @@ class VoiceTyper(QObject):
             self.settings.setValue("journal_dir", journal_dir)
             logging.info(f"Journal directory changed to: {journal_dir}")
             
-            # Update the journal manager with the new directory
-            self.journal_manager = JournalingManager(output_dir=journal_dir)
+            # Update the journal manager with the new directory and existing prompt
+            summary_prompt = self.settings.value("summary_prompt")
+            self.journal_manager = JournalingManager(output_dir=journal_dir, summary_prompt=summary_prompt)
             
             # Show confirmation to user
             self.tray_icon.showMessage(
@@ -675,6 +684,70 @@ class VoiceTyper(QObject):
                 QSystemTrayIcon.Information, 
                 3000
             )
+            
+    def prompt_edit_summary_prompt(self):
+        """Opens a dialog to edit the summary prompt template used for journal entries."""
+        # Get current summary prompt from settings or use default
+        default_prompt = "Provide a 1-2 sentence summary of this text. DO NOT add any commentary, analysis, or description of the text. Only extract and condense the main points:"
+        current_prompt = self.settings.value("summary_prompt", default_prompt)
+        
+        # Create dialog
+        dialog = QDialog(None)
+        dialog.setWindowTitle("Edit Summary Prompt")
+        dialog.setMinimumWidth(600)
+        dialog.setMinimumHeight(300)
+        
+        # Create layout
+        layout = QVBoxLayout(dialog)
+        
+        # Add explanation label
+        explanation = QLabel(
+            "Customize the prompt used to generate summaries for journal entries. "
+            "You can include personal context like your name or background to make summaries more relevant. "
+            "The transcript will be appended to the end of this prompt."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        
+        # Add text edit for prompt
+        prompt_edit = QTextEdit(dialog)
+        prompt_edit.setPlainText(current_prompt)
+        layout.addWidget(prompt_edit)
+        
+        # Add reset button
+        reset_button = QPushButton("Reset to Default", dialog)
+        reset_button.clicked.connect(lambda: prompt_edit.setPlainText(default_prompt))
+        
+        # Add buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        
+        # Add reset button to button box layout
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(reset_button)
+        button_layout.addStretch()
+        button_layout.addWidget(button_box)
+        layout.addLayout(button_layout)
+        
+        # Show dialog and process result
+        if dialog.exec_() == QDialog.Accepted:
+            new_prompt = prompt_edit.toPlainText().strip()
+            if new_prompt:
+                # Save to settings
+                self.settings.setValue("summary_prompt", new_prompt)
+                logging.info("Summary prompt updated")
+                
+                # Update the journal manager with the new prompt
+                self.journal_manager.set_summary_prompt(new_prompt)
+                
+                # Show confirmation to user
+                self.tray_icon.showMessage(
+                    "Settings Updated", 
+                    "Summary prompt has been updated.", 
+                    QSystemTrayIcon.Information, 
+                    3000
+                )
     
     def handle_transcription(self, text):
         """Handle the transcribed text."""
