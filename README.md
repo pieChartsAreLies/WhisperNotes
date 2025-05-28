@@ -1,10 +1,10 @@
-# Voice Typer
+# WhisperNotes
 
-A powerful, privacy-focused voice-to-text application that runs entirely on your computer (macOS and Windows supported). Voice Typer serves two distinct purposes: instant transcription for everyday tasks and thoughtful voice journaling with AI-enhanced organization.
+A powerful, privacy-focused voice-to-text application that runs entirely on your computer (macOS and Windows supported). WhisperNotes serves two distinct purposes: instant transcription for everyday tasks and thoughtful voice journaling with AI-enhanced organization.
 
-## What is Voice Typer?
+## What is WhisperNotes?
 
-Voice Typer combines two powerful tools in one seamless application:
+WhisperNotes combines two powerful tools in one seamless application:
 
 ### 1. Instant Voice-to-Text Transcription
 
@@ -17,7 +17,7 @@ Capture your spoken words instantly with a simple keyboard shortcut. Perfect for
 
 ### 2. Voice Journaling System
 
-Transform your spoken thoughts into organized, searchable journal entries with AI assistance. Voice Typer:
+Transform your spoken thoughts into organized, searchable journal entries with AI assistance. WhisperNotes:
 
 - Creates markdown-formatted journal entries from your voice recordings
 - Automatically generates concise summaries of your entries
@@ -55,8 +55,8 @@ Transform your spoken thoughts into organized, searchable journal entries with A
 
 2. **Clone this repository** or download the source code:
    ```bash
-   git clone https://github.com/yourusername/voice_typer.git
-   cd voice_typer
+   git clone https://github.com/stinkysloth/WhisperNotes.git
+   cd WhisperNotes
    ```
 
 3. **Install additional audio dependencies** (required for PyAudio):
@@ -90,8 +90,8 @@ Transform your spoken thoughts into organized, searchable journal entries with A
 
 2. **Clone this repository** or download the source code:
    ```cmd
-   git clone https://github.com/yourusername/voice_typer.git
-   cd voice_typer
+   git clone https://github.com/stinkysloth/WhisperNotes.git
+   cd WhisperNotes
    ```
 
 3. **Create a virtual environment** (recommended):
@@ -126,14 +126,14 @@ Transform your spoken thoughts into organized, searchable journal entries with A
 ```bash
 # If using a virtual environment
 source venv/bin/activate
-python voice_typer.py
+python whisper_notes.py
 ```
 
 **Windows**:
 ```cmd
 # If using a virtual environment
 venv\Scripts\activate
-python voice_typer.py
+python whisper_notes.py
 ```
 
 ### Setting Up Permissions
@@ -164,7 +164,7 @@ python voice_typer.py
 - Press the journal hotkey (default: `Cmd+Shift+J` on macOS, `Ctrl+Shift+J` on Windows) to start a journal entry recording
 - Speak your thoughts, ideas, or reflections
 - Press the same hotkey again to stop recording
-   - Voice Typer will:
+   - WhisperNotes will:
      - Save the audio recording
      - Transcribe your speech
      - Generate a summary using Ollama
@@ -172,7 +172,7 @@ python voice_typer.py
      - Save everything to your journal directory
 
 5. **Customizing Settings**:
-   - Click on the Voice Typer icon in the menu bar
+   - Click on the WhisperNotes icon in the menu bar
    - Select "Output Settings" to configure:
      - Transcription output file location
      - Journal directory location
@@ -183,7 +183,7 @@ python voice_typer.py
 
 ## Privacy & Security
 
-Voice Typer is designed with privacy as a core principle:
+WhisperNotes is designed with privacy as a core principle:
 
 - **Fully Local Processing**: All speech recognition is performed on your device using Whisper
 - **No Cloud Dependencies**: No audio or transcriptions are sent to external servers
@@ -206,9 +206,9 @@ Voice Typer is designed with privacy as a core principle:
 - Personal development tracking
 - Idea capture for creative projects
 
-## Why Voice Typer?
+## Why WhisperNotes?
 
-Unlike cloud-based alternatives, Voice Typer offers:
+Unlike cloud-based alternatives, WhisperNotes offers:
 
 - **Complete Privacy**: No data ever leaves your computer
 - **No Subscription Fees**: One-time setup, no recurring costs
@@ -226,12 +226,12 @@ When using the journaling feature:
 
 ## Logging
 
-- Regular transcriptions are automatically saved to the configured output file (default: `~/Documents/VoiceTyperTranscriptions.md`) with timestamps.
+- Regular transcriptions are automatically saved to the configured output file (default: `~/Documents/WhisperNotesTranscriptions.md`) with timestamps.
 - Journal entries are saved to `~/Documents/Personal/Audio Journal/Journal.md` with timestamps, summaries, and links to detailed entries.
 
 ## Customization
 
-You can customize the following in the `CONFIG` dictionary in `voice_typer.py`:
+You can customize the following in the `CONFIG` dictionary in `whisper_notes.py`:
 
 - Hotkey combination
 - Whisper model size (`tiny`, `base`, `small`, `medium`, `large`)

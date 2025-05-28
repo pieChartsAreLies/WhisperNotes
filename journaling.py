@@ -225,7 +225,8 @@ class JournalingManager:
         # Save detailed entry markdown file
         entry_file_path = self._save_entry_file(entry)
         entry["entry_file"] = entry_file_path
-        entry["entry_link"] = f"[[{date_str} - Audio Journal Entry]]"
+        
+        # The entry_link will be set in _save_entry_file method
         
         # Save to main journal file
         self._save_markdown_entry(entry)
@@ -243,12 +244,16 @@ class JournalingManager:
             str: Path to the saved entry file
         """
         try:
-            # Create filename based on date
-            entry_filename = f"{entry['date']} - Audio Journal Entry.md"
+            # Parse the timestamp to create a formatted time string
+            timestamp_obj = datetime.datetime.strptime(entry['timestamp'], "%Y-%m-%d %H:%M:%S")
+            time_str = timestamp_obj.strftime("%I:%M:%S %p")
+            
+            # Create filename based on date and time
+            entry_filename = f"{entry['date']} - {time_str} - Audio Journal Entry.md"
             entry_path = os.path.join(self.entries_dir, entry_filename)
             
             with open(entry_path, 'w', encoding='utf-8') as f:
-                f.write(f"# Audio Journal Entry - {entry['timestamp']}\n\n")
+                f.write(f"# Audio Journal Entry - {entry['date']} {time_str}\n\n")
                 
                 f.write("### Summary\n")
                 f.write(f"{entry['summary']}\n\n")
@@ -285,7 +290,9 @@ class JournalingManager:
                 f.write(f"{entry['summary']}\n\n")
                 
                 # Add link to detailed entry
-                f.write(f"{entry['entry_link']}\n\n")
+                # Update the entry link to include the time
+                entry_link = f"[[{entry['date']} - {time_str} - Audio Journal Entry]]"
+                f.write(f"{entry_link}\n\n")
                 
                 f.write("---\n\n")
                 
