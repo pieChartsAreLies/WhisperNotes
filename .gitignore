@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*build/
+*develop-eggs/
+*dist/
+*downloads/
+*eggs/
+*.egg-info/
+*htmlcov/
+*.manifest
+*.spec
+*pip-log.txt
+*pip-delete-this-directory.txt
+*instance/
+*.webassets-cache
+.env
+.venv
+venv/
+venv_new/
+venv_py310/
+env/
+ENV/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Files that might appear in the root from this project
+*.log
+result.json
+
+# Test/data files
+*.m4a
+*.npy
+*.wav
+test_result.json
+test_keyboard.py
+test_keyboard_env.py
+test_typing.py
+
+# IDE / Editor specific
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
