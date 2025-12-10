@@ -264,10 +264,11 @@ class RecordingThread(QThread):
     """A thread for recording audio."""
     finished = Signal(object)  # Emits audio data when done
     error = Signal(str)
-    
-    def __init__(self, max_duration=900.0):  # Changed from 10.0 to 900.0 (15 minutes)
+
+    def __init__(self, max_duration=900.0, device=None):  # Changed from 10.0 to 900.0 (15 minutes)
         super().__init__()
         self.max_duration = max_duration
+        self.device = device  # Audio input device ID (None = default)
         self.stop_flag = False
     
     def run(self):
@@ -280,19 +281,20 @@ class RecordingThread(QThread):
             # Get available audio devices
             devices = sd.query_devices()
             logging.info(f"Available audio devices: {len(devices)}")
-            
-            # Find default input device
-            default_device = sd.default.device[0]
-            device_info = devices[default_device]
-            logging.info(f"Using input device {default_device}: {device_info['name']}")
-            
+
+            # Determine which device to use
+            device_to_use = self.device if self.device is not None else sd.default.device[0]
+            device_info = devices[device_to_use]
+            logging.info(f"Using input device {device_to_use}: {device_info['name']}")
+
             # Record audio
             logging.info(f"Recording audio for up to {self.max_duration} seconds...")
             audio_data = sd.rec(
                 int(self.max_duration * sample_rate),
                 samplerate=sample_rate,
                 channels=channels,
-                dtype='float32'
+                dtype='float32',
+                device=device_to_use
             )
             
             # Keep track of recording time
@@ -502,6 +504,12 @@ class WhisperNotes(QObject):
         select_ollama_model_action = QAction("Select Ollama Model...", self)
         select_ollama_model_action.triggered.connect(self.prompt_select_ollama_model)
         output_settings_menu.addAction(select_ollama_model_action)
+
+        output_settings_menu.addSeparator()
+
+        select_audio_input_action = QAction("Select Audio Input Device...", self)
+        select_audio_input_action.triggered.connect(self.prompt_select_audio_input)
+        output_settings_menu.addAction(select_audio_input_action)
 
         menu.addMenu(output_settings_menu)
         
@@ -1082,6 +1090,111 @@ class WhisperNotes(QObject):
                         f"The hotkey format is invalid: {str(e)}\n\nPlease use format like 'cmd+shift+j' or 'ctrl+alt+j'."
                     )
 
+    def prompt_select_audio_input(self):
+        """Opens a dialog to select which audio input device to use for recording."""
+        try:
+            # Get available audio input devices
+            devices = sd.query_devices()
+            input_devices = []
+
+            for idx, device in enumerate(devices):
+                # Only include devices that have input channels
+                if device['max_input_channels'] > 0:
+                    input_devices.append((idx, device['name'], device['max_input_channels']))
+
+            if not input_devices:
+                QMessageBox.warning(
+                    None,
+                    "No Input Devices",
+                    "No audio input devices found. Please check your audio settings."
+                )
+                return
+
+            # Get current device from settings (None means default)
+            current_device = self.settings.value("audio_input_device", None)
+            if current_device is not None:
+                current_device = int(current_device)
+
+            # Create dialog
+            from PySide6.QtWidgets import QComboBox
+            dialog = QDialog(None)
+            dialog.setWindowTitle("Select Audio Input Device")
+            dialog.setMinimumWidth(500)
+
+            # Create layout
+            layout = QVBoxLayout(dialog)
+
+            # Add explanation
+            explanation = QLabel(
+                "Select which microphone or audio input device to use for recording.\n\n"
+                "If you don't hear audio after switching, try restarting the application."
+            )
+            explanation.setWordWrap(True)
+            layout.addWidget(explanation)
+
+            # Add device dropdown
+            device_label = QLabel("Available Input Devices:")
+            layout.addWidget(device_label)
+
+            device_combo = QComboBox(dialog)
+            device_combo.addItem("System Default", None)
+
+            current_index = 0
+            for i, (idx, name, channels) in enumerate(input_devices):
+                device_combo.addItem(f"{name} ({channels} channels)", idx)
+                if current_device == idx:
+                    current_index = i + 1  # +1 because of "System Default" at index 0
+
+            device_combo.setCurrentIndex(current_index)
+            layout.addWidget(device_combo)
+
+            # Show current device
+            if current_device is None:
+                default_device = sd.default.device[0]
+                default_name = devices[default_device]['name']
+                current_info = QLabel(f"Currently using: System Default ({default_name})")
+            else:
+                current_name = devices[current_device]['name']
+                current_info = QLabel(f"Currently using: {current_name}")
+            current_info.setStyleSheet("color: #666; font-style: italic;")
+            layout.addWidget(current_info)
+
+            # Add buttons
+            button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+
+            # Show dialog and process result
+            if dialog.exec_() == QDialog.Accepted:
+                selected_device = device_combo.currentData()
+
+                # Save to settings
+                if selected_device is None:
+                    self.settings.setValue("audio_input_device", None)
+                    device_name = "System Default"
+                    logging.info("Audio input device set to system default")
+                else:
+                    self.settings.setValue("audio_input_device", selected_device)
+                    device_name = devices[selected_device]['name']
+                    logging.info(f"Audio input device changed to: {device_name} (device {selected_device})")
+
+                # Show confirmation
+                self.tray_icon.showMessage(
+                    "Settings Updated",
+                    f"Audio input device set to: {device_name}\n\nThis will be used for all recordings.",
+                    QSystemTrayIcon.Information,
+                    5000
+                )
+
+        except Exception as e:
+            logging.error(f"Error selecting audio input device: {e}", exc_info=True)
+            QMessageBox.critical(
+                None,
+                "Error",
+                f"Failed to load audio input devices:\n\n{str(e)}"
+            )
+
     def prompt_select_ollama_model(self):
         """Opens a dialog to select which Ollama model to use for AI processing."""
         try:
@@ -1331,10 +1444,15 @@ class WhisperNotes(QObject):
             self.toggle_action.setText("Stop Recording")
             self.update_icon(True)
             self.tray_icon.setToolTip("WhisperNotes (Recording...)")
-            
-            # Create recording thread
-            self.recording_thread = RecordingThread()
-            
+
+            # Get selected audio input device from settings
+            audio_device = self.settings.value("audio_input_device", None)
+            if audio_device is not None:
+                audio_device = int(audio_device)
+
+            # Create recording thread with selected device
+            self.recording_thread = RecordingThread(device=audio_device)
+
             # Connect signals
             self.recording_thread.finished.connect(self.handle_recording_finished)
             self.recording_thread.error.connect(self.handle_error)
