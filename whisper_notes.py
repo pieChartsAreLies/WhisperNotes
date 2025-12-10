@@ -270,6 +270,59 @@ class RecordingThread(QThread):
         self.max_duration = max_duration
         self.device = device  # Audio input device ID (None = default)
         self.stop_flag = False
+
+    def preprocess_audio(self, audio_data, sample_rate):
+        """
+        Apply audio preprocessing to improve quality.
+
+        Args:
+            audio_data: numpy array of audio samples
+            sample_rate: sample rate of the audio
+
+        Returns:
+            Processed audio as numpy array
+        """
+        try:
+            import numpy as np
+            from scipy import signal
+
+            logging.info("Applying audio preprocessing...")
+
+            # Ensure audio is 1D
+            if len(audio_data.shape) > 1:
+                audio_data = audio_data.flatten()
+
+            # 1. High-pass filter to remove low-frequency rumble (< 80 Hz)
+            # This removes bass rumble and improves clarity
+            nyquist = sample_rate / 2
+            cutoff_freq = 80  # Hz
+            normalized_cutoff = cutoff_freq / nyquist
+
+            # Design a 5th order Butterworth high-pass filter
+            sos = signal.butter(5, normalized_cutoff, btype='high', output='sos')
+            audio_filtered = signal.sosfilt(sos, audio_data)
+
+            # 2. Normalize audio to reduce volume variations
+            # This helps with quiet recordings
+            max_val = np.abs(audio_filtered).max()
+            if max_val > 0:
+                audio_normalized = audio_filtered / max_val * 0.95  # Scale to 95% to avoid clipping
+            else:
+                audio_normalized = audio_filtered
+
+            # 3. Simple noise gate - reduce very quiet background noise
+            # Set threshold at 2% of max amplitude
+            threshold = 0.02
+            audio_gated = np.where(np.abs(audio_normalized) < threshold,
+                                   audio_normalized * 0.1,  # Reduce quiet parts to 10%
+                                   audio_normalized)
+
+            logging.info("Audio preprocessing complete")
+            return audio_gated.astype(np.float32)
+
+        except Exception as e:
+            logging.warning(f"Audio preprocessing failed, using original audio: {e}")
+            return audio_data
     
     def run(self):
         """Record audio for up to max_duration seconds or until stopped."""
@@ -319,12 +372,15 @@ class RecordingThread(QThread):
                 audio_data = audio_data[:frames_recorded]
             else:
                 logging.info(f"Recording completed full {self.max_duration} seconds")
-            
+
+            # Apply audio preprocessing to improve quality
+            audio_data = self.preprocess_audio(audio_data, sample_rate)
+
             # Convert to the format expected by Whisper
             if sample_rate != 16000:
                 logging.info(f"Resampling from {sample_rate}Hz to 16000Hz...")
                 audio_data = librosa.resample(audio_data.squeeze(), orig_sr=sample_rate, target_sr=16000)
-            
+
             # Emit the audio data
             self.finished.emit(audio_data)
             
