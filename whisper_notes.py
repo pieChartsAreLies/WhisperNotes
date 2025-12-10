@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import sys
-print("Main process Python executable:", sys.executable)
 import time
 import logging
 import threading
