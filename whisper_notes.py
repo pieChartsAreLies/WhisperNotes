@@ -292,33 +292,26 @@ class RecordingThread(QThread):
             if len(audio_data.shape) > 1:
                 audio_data = audio_data.flatten()
 
-            # 1. High-pass filter to remove low-frequency rumble (< 80 Hz)
-            # This removes bass rumble and improves clarity
+            # 1. Gentle high-pass filter to remove only very low frequency rumble (< 60 Hz)
+            # This removes bass rumble without affecting voice quality
             nyquist = sample_rate / 2
-            cutoff_freq = 80  # Hz
+            cutoff_freq = 60  # Hz - lower cutoff for gentler filtering
             normalized_cutoff = cutoff_freq / nyquist
 
-            # Design a 5th order Butterworth high-pass filter
-            sos = signal.butter(5, normalized_cutoff, btype='high', output='sos')
+            # Design a 2nd order Butterworth high-pass filter (gentler slope)
+            sos = signal.butter(2, normalized_cutoff, btype='high', output='sos')
             audio_filtered = signal.sosfilt(sos, audio_data)
 
-            # 2. Normalize audio to reduce volume variations
+            # 2. Normalize audio to reduce volume variations (gentler)
             # This helps with quiet recordings
             max_val = np.abs(audio_filtered).max()
             if max_val > 0:
-                audio_normalized = audio_filtered / max_val * 0.95  # Scale to 95% to avoid clipping
+                audio_normalized = audio_filtered / max_val * 0.8  # Scale to 80% for more headroom
             else:
                 audio_normalized = audio_filtered
 
-            # 3. Simple noise gate - reduce very quiet background noise
-            # Set threshold at 2% of max amplitude
-            threshold = 0.02
-            audio_gated = np.where(np.abs(audio_normalized) < threshold,
-                                   audio_normalized * 0.1,  # Reduce quiet parts to 10%
-                                   audio_normalized)
-
             logging.info("Audio preprocessing complete")
-            return audio_gated.astype(np.float32)
+            return audio_normalized.astype(np.float32)
 
         except Exception as e:
             logging.warning(f"Audio preprocessing failed, using original audio: {e}")
