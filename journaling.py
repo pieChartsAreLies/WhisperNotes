@@ -36,7 +36,14 @@ class JournalingManager:
             self.output_dir = output_dir
             
         # Set default prompts
-        self.default_summary_prompt = "Summarize the following in 1-2 sentences from a first-person perspective, as if you are the person who said it:"
+        self.default_summary_prompt = """Organize this transcription into a topic-based summary. Identify the main topics discussed and create a bullet point for each topic. Format each bullet as: "Topic - Brief description of what was discussed about this topic". Use first-person perspective as if you are the speaker.
+
+Example format:
+- Work - Discussed the latest round of layoffs and concerns about job security
+- Family - Planning to visit Uncle's house next week for the holiday
+- Relationship - Things are going great with Melissa, feeling very connected
+
+Keep each bullet point concise but informative enough to remember what was discussed."""
         self.summary_prompt = summary_prompt if summary_prompt else self.default_summary_prompt
         
         # Default formatting prompt
@@ -90,18 +97,20 @@ class JournalingManager:
         """Ensure the specified directory exists, create it if it doesn't."""
         os.makedirs(directory, exist_ok=True)
     
-    def save_audio(self, audio_data: bytes, sample_rate: int = 16000) -> str:
+    def save_audio(self, audio_data: bytes, sample_rate: int = 16000, custom_timestamp: Optional[datetime.datetime] = None) -> str:
         """
         Save audio data to a file and return the file path.
-        
+
         Args:
             audio_data: Raw audio data as numpy array
             sample_rate: Audio sample rate
-            
+            custom_timestamp: Optional custom timestamp for the filename (defaults to current time)
+
         Returns:
             str: Path to the saved audio file
         """
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        ts = custom_timestamp if custom_timestamp else datetime.datetime.now()
+        timestamp = ts.strftime("%Y%m%d_%H%M%S")
         filename = f"recording_{timestamp}.wav"
         filepath = os.path.join(self.recordings_dir, filename)
         
@@ -192,7 +201,7 @@ class JournalingManager:
             summary_response = ollama.chat(model=self.ollama_model, messages=[
                 {
                     "role": "system",
-                    "content": "You are a concise summarizer. Provide only the summary without any preamble, introduction, or meta-commentary."
+                    "content": "You are a topic-based summarizer for personal journal entries. Organize content by topics (Work, Family, Health, Relationships, etc.) in bullet point format. Provide only the formatted summary without any preamble, introduction, or meta-commentary."
                 },
                 {
                     "role": "user",
@@ -227,19 +236,20 @@ class JournalingManager:
             simple_summary = f"Transcription: {text[:50]}..." if len(text) > 50 else f"Transcription: {text}"
             return simple_summary, text  # Return original text if processing fails
     
-    def create_journal_entry(self, transcription: str, audio_data=None, sample_rate: int = 16000) -> Dict[str, Any]:
+    def create_journal_entry(self, transcription: str, audio_data=None, sample_rate: int = 16000, custom_timestamp: Optional[datetime.datetime] = None) -> Dict[str, Any]:
         """
         Create a new journal entry with optional audio.
-        
+
         Args:
             transcription: The transcribed text
             audio_data: Optional raw audio data
             sample_rate: Audio sample rate
-            
+            custom_timestamp: Optional custom timestamp for the entry (defaults to current time)
+
         Returns:
             Dict containing entry metadata
         """
-        timestamp = datetime.datetime.now()
+        timestamp = custom_timestamp if custom_timestamp else datetime.datetime.now()
         date_str = timestamp.strftime("%Y-%m-%d")
         timestamp_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
         entry_id = timestamp.strftime("%Y%m%d_%H%M%S")
@@ -251,7 +261,7 @@ class JournalingManager:
         audio_path = None
         relative_audio_path = None
         if audio_data is not None:
-            audio_path = self.save_audio(audio_data, sample_rate)
+            audio_path = self.save_audio(audio_data, sample_rate, custom_timestamp=timestamp)
             if audio_path:
                 relative_audio_path = os.path.join("recordings", os.path.basename(audio_path))
         

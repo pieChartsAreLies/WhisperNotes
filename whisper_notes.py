@@ -14,9 +14,11 @@ import subprocess
 import tempfile
 import json
 from PySide6.QtWidgets import (QApplication, QSystemTrayIcon, QMenu, QMessageBox, QFileDialog,
-                               QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton, QDialogButtonBox)
+                               QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTextEdit, QPushButton, QDialogButtonBox,
+                               QDateTimeEdit, QProgressDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+                               QAbstractItemView, QCheckBox, QWidget)
 from PySide6.QtGui import QIcon, QAction, QPixmap, QPainter, QColor
-from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QMutex, QCoreApplication, QSettings, QStandardPaths
+from PySide6.QtCore import QObject, QThread, Signal, Qt, QTimer, QMutex, QCoreApplication, QSettings, QStandardPaths, QDateTime
 
 # Import journaling module
 try:
@@ -38,6 +40,88 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# Supported audio file extensions
+AUDIO_EXTENSIONS = {'.wav', '.m4a', '.mp3', '.flac', '.ogg', '.aac', '.wma'}
+
+def parse_filename_timestamp(filename):
+    """
+    Parse timestamp from audio journal filename.
+    Supports two formats:
+    1. "NN - Audio Journal Recordings - MMM DD, YYYY HHMMSS AM.wav"
+    2. "NN - Audio Journal Recordings - MM.DD.YYYY HHMMAM.wav"
+
+    Returns datetime object or None if parsing fails.
+    """
+    try:
+        # Remove file extension
+        name_without_ext = os.path.splitext(filename)[0]
+
+        # Split by " - "
+        parts = name_without_ext.split(' - ')
+
+        if len(parts) >= 3:
+            datetime_part = parts[2].strip()
+
+            # Try Format 2 first: "11.26.2022 0727AM"
+            if datetime_part.endswith('AM') or datetime_part.endswith('PM'):
+                am_pm = datetime_part[-2:]
+                datetime_without_ampm = datetime_part[:-2]
+                parts_split = datetime_without_ampm.split()
+
+                if len(parts_split) == 2:
+                    date_part = parts_split[0]
+                    time_part = parts_split[1]
+
+                    if '.' in date_part:
+                        # Format 2: "11.26.2022 0727AM"
+                        if len(time_part) == 4:
+                            hour = int(time_part[0:2])
+                            minute = int(time_part[2:4])
+
+                            if hour > 12:
+                                # 24-hour format
+                                formatted_time = f"{hour:02d}:{minute:02d}:00"
+                                full_datetime_str = f"{date_part} {formatted_time}"
+                                return datetime.strptime(full_datetime_str, "%m.%d.%Y %H:%M:%S")
+                            else:
+                                # 12-hour format
+                                formatted_time = f"{hour:02d}:{minute:02d}:00"
+                                full_datetime_str = f"{date_part} {formatted_time} {am_pm}"
+                                return datetime.strptime(full_datetime_str, "%m.%d.%Y %I:%M:%S %p")
+                        elif len(time_part) == 3:
+                            formatted_time = f"{time_part[0]}:{time_part[1:3]}:00"
+                            full_datetime_str = f"{date_part} {formatted_time} {am_pm}"
+                            return datetime.strptime(full_datetime_str, "%m.%d.%Y %I:%M:%S %p")
+
+            # Try Format 1: "Sep 27, 2018 83059 AM"
+            if ' AM' in datetime_part or ' PM' in datetime_part:
+                parts_split = datetime_part.split()
+
+                am_pm = None
+                time_part = None
+                for i, part in enumerate(parts_split):
+                    if part in ['AM', 'PM']:
+                        am_pm = part
+                        if i > 0:
+                            time_part = parts_split[i-1]
+                        break
+
+                date_part = ' '.join(parts_split[:len(parts_split)-2])
+
+                if time_part and am_pm and len(time_part) >= 5:
+                    if len(time_part) == 6:
+                        formatted_time = f"{time_part[0:2]}:{time_part[2:4]}:{time_part[4:6]}"
+                    else:
+                        formatted_time = f"{time_part[0]}:{time_part[1:3]}:{time_part[3:5]}"
+
+                    full_datetime_str = f"{date_part} {formatted_time} {am_pm}"
+                    return datetime.strptime(full_datetime_str, "%b %d, %Y %I:%M:%S %p")
+
+    except Exception as e:
+        logging.debug(f"Error parsing filename timestamp: {e}")
+
+    return None
 
 class ModelLoader(QObject):
     """Worker for loading the Whisper model."""
@@ -388,6 +472,248 @@ class RecordingThread(QThread):
         self.stop_flag = True
 
 
+class ImportWorker(QObject):
+    """Worker for loading and processing imported audio files."""
+    finished = Signal(object, object, object)  # Emits (audio_data, transcription, custom_timestamp)
+    progress = Signal(str)  # Progress updates
+    error = Signal(str)
+
+    def __init__(self, file_path, custom_timestamp, model):
+        super().__init__()
+        self.file_path = file_path
+        self.custom_timestamp = custom_timestamp
+        self.model = model
+
+    def run(self):
+        """Load, convert, and transcribe the audio file."""
+        try:
+            import soundfile as sf
+
+            # Load audio file
+            self.progress.emit("Loading audio file...")
+            logging.info(f"Loading audio from {self.file_path}")
+
+            try:
+                audio_data, sample_rate = sf.read(self.file_path)
+            except Exception as e:
+                logging.warning(f"soundfile failed, trying librosa: {e}")
+                audio_data, sample_rate = librosa.load(self.file_path, sr=None)
+
+            logging.info(f"Audio loaded: {len(audio_data)} samples at {sample_rate}Hz")
+
+            # Check if audio is long enough
+            min_samples = int(sample_rate * 0.1)
+            if len(audio_data) < min_samples:
+                self.error.emit(f"Audio file is too short ({len(audio_data)/sample_rate:.2f}s)")
+                return
+
+            # Convert to mono if stereo
+            if len(audio_data.shape) > 1:
+                self.progress.emit("Converting to mono...")
+                audio_data = np.mean(audio_data, axis=1)
+
+            # Resample to 16kHz if needed
+            if sample_rate != 16000:
+                self.progress.emit(f"Resampling from {sample_rate}Hz to 16000Hz...")
+                logging.info(f"Resampling from {sample_rate}Hz to 16000Hz...")
+                audio_data = librosa.resample(audio_data, orig_sr=sample_rate, target_sr=16000, res_type='kaiser_fast')
+                sample_rate = 16000
+
+            # Ensure float32
+            audio_data = audio_data.astype(np.float32)
+
+            # Transcribe
+            self.progress.emit("Transcribing audio...")
+            logging.info("Transcribing imported audio...")
+            result = self.model.transcribe(audio_data, fp16=False)
+            transcription = result["text"].strip()
+
+            if not transcription:
+                self.error.emit("No transcription generated from audio file")
+                return
+
+            logging.info(f"Transcription complete: {transcription[:100]}...")
+
+            # Emit results
+            self.finished.emit(audio_data, transcription, self.custom_timestamp)
+
+        except Exception as e:
+            error_msg = f"Error processing imported audio: {e}"
+            logging.error(error_msg, exc_info=True)
+            self.error.emit(error_msg)
+
+
+class BatchImportDialog(QDialog):
+    """Dialog for batch importing multiple audio files."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Import Recordings")
+        self.setMinimumSize(900, 600)
+        self.audio_files = []  # List of (filepath, datetime, checkbox_widget, datetime_widget)
+
+        layout = QVBoxLayout()
+
+        # Directory selector
+        dir_layout = QHBoxLayout()
+        dir_label = QLabel("Directory:")
+        self.dir_path = QLabel("No directory selected")
+        select_dir_btn = QPushButton("Select Directory...")
+        select_dir_btn.clicked.connect(self.select_directory)
+        dir_layout.addWidget(dir_label)
+        dir_layout.addWidget(self.dir_path, 1)
+        dir_layout.addWidget(select_dir_btn)
+        layout.addLayout(dir_layout)
+
+        # Table for files
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Import", "Filename", "Date/Time"])
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        layout.addWidget(self.table)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.clicked.connect(self.select_all)
+        self.deselect_all_btn = QPushButton("Deselect All")
+        self.deselect_all_btn.clicked.connect(self.deselect_all)
+        button_layout.addWidget(self.select_all_btn)
+        button_layout.addWidget(self.deselect_all_btn)
+        button_layout.addStretch()
+
+        self.import_btn = QPushButton("Import Selected")
+        self.import_btn.clicked.connect(self.accept)
+        self.import_btn.setEnabled(False)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.import_btn)
+        button_layout.addWidget(self.cancel_btn)
+        layout.addLayout(button_layout)
+
+        self.setLayout(layout)
+
+    def select_directory(self):
+        """Open directory selector and load audio files."""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Directory with Audio Recordings",
+            ""
+        )
+
+        if not directory:
+            return
+
+        self.dir_path.setText(directory)
+        self.load_audio_files(directory)
+
+    def load_audio_files(self, directory):
+        """Load all audio files from directory."""
+        self.audio_files = []
+        self.table.setRowCount(0)
+
+        # Find all audio files
+        for root, dirs, files in os.walk(directory):
+            for file in files:
+                ext = os.path.splitext(file)[1].lower()
+                if ext in AUDIO_EXTENSIONS:
+                    filepath = os.path.join(root, file)
+
+                    # Try to parse timestamp from filename
+                    parsed_dt = parse_filename_timestamp(file)
+                    if parsed_dt is None:
+                        # Default to 1900-01-01 if parsing fails
+                        parsed_dt = datetime(1900, 1, 1, 0, 0, 0)
+
+                    self.audio_files.append({
+                        'filepath': filepath,
+                        'filename': file,
+                        'datetime': parsed_dt
+                    })
+
+        # Sort by datetime
+        self.audio_files.sort(key=lambda x: x['datetime'])
+
+        # Populate table
+        self.table.setRowCount(len(self.audio_files))
+        for i, file_info in enumerate(self.audio_files):
+            # Checkbox
+            checkbox = QCheckBox()
+            checkbox.setChecked(True)
+            checkbox_widget = QWidget()
+            checkbox_layout = QHBoxLayout(checkbox_widget)
+            checkbox_layout.addWidget(checkbox)
+            checkbox_layout.setAlignment(Qt.AlignCenter)
+            checkbox_layout.setContentsMargins(0, 0, 0, 0)
+            self.table.setCellWidget(i, 0, checkbox_widget)
+            file_info['checkbox'] = checkbox
+
+            # Filename
+            filename_item = QTableWidgetItem(file_info['filename'])
+            self.table.setItem(i, 1, filename_item)
+
+            # DateTime editor
+            datetime_edit = QDateTimeEdit()
+            datetime_edit.setDateTime(QDateTime(
+                file_info['datetime'].year,
+                file_info['datetime'].month,
+                file_info['datetime'].day,
+                file_info['datetime'].hour,
+                file_info['datetime'].minute,
+                file_info['datetime'].second
+            ))
+            datetime_edit.setCalendarPopup(True)
+            datetime_edit.setDisplayFormat("yyyy-MM-dd hh:mm:ss AP")
+            self.table.setCellWidget(i, 2, datetime_edit)
+            file_info['datetime_edit'] = datetime_edit
+
+        self.import_btn.setEnabled(len(self.audio_files) > 0)
+
+        # Show count
+        QMessageBox.information(
+            self,
+            "Files Loaded",
+            f"Found {len(self.audio_files)} audio files"
+        )
+
+    def select_all(self):
+        """Check all checkboxes."""
+        for file_info in self.audio_files:
+            file_info['checkbox'].setChecked(True)
+
+    def deselect_all(self):
+        """Uncheck all checkboxes."""
+        for file_info in self.audio_files:
+            file_info['checkbox'].setChecked(False)
+
+    def get_selected_files(self):
+        """Return list of selected files with their timestamps."""
+        selected = []
+        for file_info in self.audio_files:
+            if file_info['checkbox'].isChecked():
+                # Get the datetime from the editor
+                q_datetime = file_info['datetime_edit'].dateTime()
+                custom_timestamp = datetime(
+                    q_datetime.date().year(),
+                    q_datetime.date().month(),
+                    q_datetime.date().day(),
+                    q_datetime.time().hour(),
+                    q_datetime.time().minute(),
+                    q_datetime.time().second()
+                )
+                selected.append({
+                    'filepath': file_info['filepath'],
+                    'filename': file_info['filename'],
+                    'timestamp': custom_timestamp
+                })
+        return selected
+
+
 class WhisperNotes(QObject):
     """Main application class for WhisperNotes."""
     toggle_recording_signal = Signal()
@@ -564,16 +890,20 @@ class WhisperNotes(QObject):
         
         # Hotkey settings submenu
         hotkey_settings_menu = QMenu("Hotkey Settings", menu)
-        
+
         set_record_hotkey_action = QAction("Set Recording Hotkey...", self)
         set_record_hotkey_action.triggered.connect(self.prompt_set_record_hotkey)
         hotkey_settings_menu.addAction(set_record_hotkey_action)
-        
+
         set_journal_hotkey_action = QAction("Set Journal Hotkey...", self)
         set_journal_hotkey_action.triggered.connect(self.prompt_set_journal_hotkey)
         hotkey_settings_menu.addAction(set_journal_hotkey_action)
-        
+
         menu.addMenu(hotkey_settings_menu)
+
+        import_recording_action = QAction("Import Recording...", self)
+        import_recording_action.triggered.connect(self.import_recording)
+        menu.addAction(import_recording_action)
 
         menu.addSeparator()
 
@@ -1364,6 +1694,235 @@ class WhisperNotes(QObject):
                 "Error",
                 f"Failed to load Ollama models:\n\n{str(e)}"
             )
+
+    def import_recording(self):
+        """Import existing audio recordings (batch import)."""
+        try:
+            # Check if model is loaded
+            if self.model is None:
+                QMessageBox.warning(
+                    None,
+                    "Model Not Loaded",
+                    "Whisper model is still loading. Please wait and try again."
+                )
+                return
+
+            # Show batch import dialog
+            dialog = BatchImportDialog()
+            if dialog.exec() != QDialog.Accepted:
+                return  # User cancelled
+
+            # Get selected files
+            selected_files = dialog.get_selected_files()
+            if not selected_files:
+                QMessageBox.information(
+                    None,
+                    "No Files Selected",
+                    "No files were selected for import."
+                )
+                return
+
+            logging.info(f"Starting batch import of {len(selected_files)} files")
+
+            # Initialize batch processing
+            self.batch_import_queue = selected_files
+            self.batch_import_index = 0
+            self.batch_import_successful = 0
+            self.batch_import_failed = 0
+            self.batch_import_cancelled = False
+
+            # Show progress dialog with cancel button
+            self.import_progress = QProgressDialog(
+                "Processing audio files...",
+                "Cancel",
+                0,
+                len(selected_files),
+                None
+            )
+            self.import_progress.setWindowTitle("Batch Import")
+            self.import_progress.setWindowModality(Qt.ApplicationModal)
+            self.import_progress.canceled.connect(self.cancel_batch_import)
+            self.import_progress.show()
+
+            # Start processing first file
+            self.process_next_batch_file()
+
+        except Exception as e:
+            logging.error(f"Error in import_recording: {e}", exc_info=True)
+            QMessageBox.critical(
+                None,
+                "Import Error",
+                f"Failed to start batch import:\n\n{str(e)}"
+            )
+
+    def cancel_batch_import(self):
+        """Cancel the batch import process."""
+        self.batch_import_cancelled = True
+        logging.info("Batch import cancelled by user")
+
+    def process_next_batch_file(self):
+        """Process the next file in the batch import queue."""
+        # Check if cancelled
+        if self.batch_import_cancelled:
+            self.finish_batch_import()
+            return
+
+        # Check if done
+        if self.batch_import_index >= len(self.batch_import_queue):
+            self.finish_batch_import()
+            return
+
+        # Get current file
+        file_info = self.batch_import_queue[self.batch_import_index]
+        filepath = file_info['filepath']
+        filename = file_info['filename']
+        custom_timestamp = file_info['timestamp']
+
+        logging.info(f"Processing file {self.batch_import_index + 1}/{len(self.batch_import_queue)}: {filename}")
+
+        # Update progress
+        self.import_progress.setValue(self.batch_import_index)
+        self.import_progress.setLabelText(
+            f"Processing {self.batch_import_index + 1}/{len(self.batch_import_queue)}:\n{filename}"
+        )
+
+        # Create worker for this file
+        self.import_worker = ImportWorker(filepath, custom_timestamp, self.model)
+        self.import_thread = QThread()
+        self.import_worker.moveToThread(self.import_thread)
+
+        # Connect signals
+        self.import_thread.started.connect(self.import_worker.run)
+        self.import_worker.progress.connect(self.on_batch_import_progress)
+        self.import_worker.finished.connect(self.on_batch_import_file_finished)
+        self.import_worker.error.connect(self.on_batch_import_file_error)
+        self.import_worker.finished.connect(self.import_thread.quit)
+        self.import_worker.error.connect(self.import_thread.quit)
+
+        # Wait for thread to finish before moving to next file
+        self.import_thread.finished.connect(self.on_import_thread_finished)
+
+        # Start processing
+        self.import_thread.start()
+
+    def on_batch_import_progress(self, message):
+        """Update progress dialog with status message for batch import."""
+        if hasattr(self, 'import_progress') and self.import_progress:
+            current_file = self.batch_import_queue[self.batch_import_index]
+            self.import_progress.setLabelText(
+                f"Processing {self.batch_import_index + 1}/{len(self.batch_import_queue)}:\n{current_file['filename']}\n{message}"
+            )
+
+    def on_batch_import_file_finished(self, audio_data, transcription, custom_timestamp):
+        """Handle completion of a single file in batch import."""
+        try:
+            # Create journal entry
+            entry = self.journal_manager.create_journal_entry(
+                transcription=transcription,
+                audio_data=audio_data,
+                sample_rate=16000,
+                custom_timestamp=custom_timestamp
+            )
+
+            logging.info(f"Successfully imported file {self.batch_import_index + 1}")
+            self.batch_import_successful += 1
+
+        except Exception as e:
+            logging.error(f"Error creating journal entry for file {self.batch_import_index + 1}: {e}")
+            self.batch_import_failed += 1
+
+    def on_batch_import_file_error(self, error_message):
+        """Handle error for a single file in batch import."""
+        logging.error(f"Error importing file {self.batch_import_index + 1}: {error_message}")
+        self.batch_import_failed += 1
+
+    def on_import_thread_finished(self):
+        """Handle thread cleanup and move to next file."""
+        # Clean up the thread
+        if hasattr(self, 'import_thread') and self.import_thread:
+            self.import_thread.deleteLater()
+            self.import_thread = None
+        if hasattr(self, 'import_worker') and self.import_worker:
+            self.import_worker.deleteLater()
+            self.import_worker = None
+
+        # Move to next file
+        self.batch_import_index += 1
+        self.process_next_batch_file()
+
+    def finish_batch_import(self):
+        """Complete the batch import process."""
+        # Close progress dialog
+        if hasattr(self, 'import_progress') and self.import_progress:
+            self.import_progress.close()
+            self.import_progress = None
+
+        # Show summary
+        if self.batch_import_cancelled:
+            message = f"Batch import cancelled.\n\nProcessed: {self.batch_import_successful + self.batch_import_failed}/{len(self.batch_import_queue)}\nSuccessful: {self.batch_import_successful}\nFailed: {self.batch_import_failed}"
+        else:
+            message = f"Batch import complete!\n\nTotal: {len(self.batch_import_queue)}\nSuccessful: {self.batch_import_successful}\nFailed: {self.batch_import_failed}"
+
+        QMessageBox.information(
+            None,
+            "Batch Import Complete",
+            message
+        )
+
+        logging.info(f"Batch import finished: {self.batch_import_successful} successful, {self.batch_import_failed} failed")
+
+    def on_import_progress(self, message):
+        """Update progress dialog with status message."""
+        if hasattr(self, 'import_progress') and self.import_progress:
+            self.import_progress.setLabelText(message)
+
+    def on_import_finished(self, audio_data, transcription, custom_timestamp):
+        """Handle completed import."""
+        try:
+            # Close progress dialog
+            if hasattr(self, 'import_progress') and self.import_progress:
+                self.import_progress.close()
+                self.import_progress = None
+
+            logging.info(f"Import complete, creating journal entry with timestamp {custom_timestamp}")
+
+            # Create journal entry with custom timestamp
+            entry = self.journal_manager.create_journal_entry(
+                transcription=transcription,
+                audio_data=audio_data,
+                sample_rate=16000,
+                custom_timestamp=custom_timestamp
+            )
+
+            # Show success notification
+            self.tray_icon.showMessage(
+                "WhisperNotes",
+                f"Imported journal entry created with timestamp: {entry.get('timestamp', 'Unknown')}",
+                QSystemTrayIcon.Information,
+                3000
+            )
+
+        except Exception as e:
+            logging.error(f"Error creating imported journal entry: {e}", exc_info=True)
+            QMessageBox.critical(
+                None,
+                "Import Error",
+                f"Failed to create journal entry:\n\n{str(e)}"
+            )
+
+    def on_import_error(self, error_message):
+        """Handle import error."""
+        # Close progress dialog
+        if hasattr(self, 'import_progress') and self.import_progress:
+            self.import_progress.close()
+            self.import_progress = None
+
+        logging.error(f"Import error: {error_message}")
+        QMessageBox.critical(
+            None,
+            "Import Error",
+            f"Failed to import recording:\n\n{error_message}"
+        )
 
     def handle_transcription(self, text):
         """Handle the transcribed text."""
